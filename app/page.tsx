@@ -68,21 +68,6 @@ function guessDomain(name: string): string {
   return slug ? `${slug}.com` : "";
 }
 
-function downloadCSV(filename: string, rows: ResultRow[]) {
-  if (!rows.length) return;
-  const headers = Object.keys(rows[0]) as (keyof ResultRow)[];
-  const csv = [
-    headers.join(","),
-    ...rows.map((r) => headers.map((h) => JSON.stringify(r[h] ?? "")).join(",")),
-  ].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"text" | "excel" | "wealth">("wealth");
@@ -91,7 +76,6 @@ export default function Home() {
   const [status, setStatus] = useState<Status>("idle");
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<ResultRow[]>([]);
-  const [showErrorsOnly, setShowErrorsOnly] = useState(false);
   const [mockMode, setMockMode] = useState(false);
   const [isLoadingWealthManagers, setIsLoadingWealthManagers] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
@@ -438,10 +422,6 @@ export default function Home() {
     setStatus("done");
   }
 
-  function onDownloadCSV() {
-    if (!results.length) return;
-    downloadCSV("companies.csv", results);
-  }
 
   function onUploadFile(file: File) {
     // Simple CSV support without external deps. Excel (xlsx) requires SheetJS.
@@ -471,9 +451,7 @@ export default function Home() {
     }
   }
 
-  const filteredResults = useMemo(() => {
-    return showErrorsOnly ? results.filter((r) => r.status === "error") : results;
-  }, [results, showErrorsOnly]);
+  const filteredResults = results;
 
   return (
     <div className="min-h-screen p-6 sm:p-10">
@@ -543,7 +521,7 @@ export default function Home() {
                     disabled={isLoadingWealthManagers}
                     className="px-3 py-1.5 text-sm rounded-md bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
                   >
-                    {isLoadingWealthManagers ? 'Loading...' : 'Load Wealth Managers'}
+                    {isLoadingWealthManagers ? 'Laden...' : 'Wealth Managers laden'}
                   </button>
                 </div>
                 <div className="text-xs text-gray-600 dark:text-gray-400">
@@ -682,27 +660,19 @@ export default function Home() {
 
           {/* Result Preview */}
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden">
-            <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+            <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-800">
               <div className="text-sm font-medium">Ergebnisvorschau</div>
-              <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-                <input
-                  type="checkbox"
-                  checked={showErrorsOnly}
-                  onChange={(e) => setShowErrorsOnly(e.target.checked)}
-                />
-                nur Fehler anzeigen
-              </label>
             </div>
             <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 dark:bg-gray-900 sticky top-0">
                   <tr>
                     <th className="text-left px-3 py-2">Firmenname</th>
-                    <th className="text-left px-3 py-2">Phone</th>
-                    <th className="text-left px-3 py-2">Country</th>
-                    <th className="text-left px-3 py-2">City</th>
+                    <th className="text-left px-3 py-2">Telefon</th>
+                    <th className="text-left px-3 py-2">Land</th>
+                    <th className="text-left px-3 py-2">Stadt</th>
                     <th className="text-left px-3 py-2">CEO</th>
-                    <th className="text-left px-3 py-2">Cofounders</th>
+                    <th className="text-left px-3 py-2">Mitgründer</th>
                     <th className="text-left px-3 py-2">Status</th>
                   </tr>
                 </thead>
@@ -773,25 +743,11 @@ export default function Home() {
             </div>
             <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-800 flex items-center gap-2">
               <button
-                onClick={onDownloadCSV}
-                disabled={!results.length}
-                className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900 disabled:opacity-50"
-              >
-                CSV herunterladen
-              </button>
-              <button
-                onClick={() => alert("XLSX-Export erfordert externe Bibliotheken wie SheetJS, derzeit nicht aktiviert.")}
-                disabled={!results.length}
-                className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900 disabled:opacity-50"
-              >
-                XLSX herunterladen
-              </button>
-              <button
                 onClick={enhanceWithExecutives}
                 disabled={!results.length || isEnhancing}
                 className="px-3 py-1.5 text-sm rounded-md bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50"
               >
-                {isEnhancing ? 'Enhancing...' : 'Enhance with CEO/Founders'}
+                {isEnhancing ? 'Erweitere...' : 'Mit CEO/Gründern erweitern'}
               </button>
             </div>
           </div>
