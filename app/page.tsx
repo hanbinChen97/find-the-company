@@ -11,15 +11,33 @@ type InputRow = {
 
 type Status = "idle" | "validating" | "running" | "done" | "failed";
 
+const getStatusText = (status: Status): string => {
+  switch (status) {
+    case "idle": return "bereit";
+    case "validating": return "validierung";
+    case "running": return "läuft";
+    case "done": return "fertig";
+    case "failed": return "fehler";
+    default: return status;
+  }
+};
+
+type CompanyListItem = {
+  company_name: string;
+};
+
 type ResultRow = {
   company_name: string;
-  domain: string;
-  address?: string;
-  industry?: string;
-  contacts?: string;
+  homepage?: string;
+  contact_page?: string;
+  phone?: string;
+  country?: string;
+  city?: string;
   ceo?: string;
+  cofounders?: string[];
   status: "ok" | "error";
   error?: string;
+  raw_text?: string; // Store the raw AI response
 };
 
 function parseTextToRows(text: string): InputRow[] {
@@ -67,7 +85,7 @@ function downloadCSV(filename: string, rows: ResultRow[]) {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"text" | "excel">("text");
+  const [activeTab, setActiveTab] = useState<"text" | "excel" | "wealth">("wealth");
   const [textValue, setTextValue] = useState("");
   const [inputRows, setInputRows] = useState<InputRow[]>([]);
   const [status, setStatus] = useState<Status>("idle");
@@ -75,6 +93,10 @@ export default function Home() {
   const [results, setResults] = useState<ResultRow[]>([]);
   const [showErrorsOnly, setShowErrorsOnly] = useState(false);
   const [mockMode, setMockMode] = useState(false);
+  const [isLoadingWealthManagers, setIsLoadingWealthManagers] = useState(false);
+  const [isEnhancing, setIsEnhancing] = useState(false);
+  const [companyLimit, setCompanyLimit] = useState(10);
+  const [currentlyProcessing, setCurrentlyProcessing] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const stats = useMemo(() => {
@@ -92,6 +114,198 @@ export default function Home() {
   function clearInput() {
     setTextValue("");
     setInputRows([]);
+  }
+
+  async function loadWealthManagers() {
+    setIsLoadingWealthManagers(true);
+    setStatus("running");
+    setProgress(0);
+    setResults([]);
+    
+    try {
+      console.log(`Loading ${companyLimit} wealth managers from target URL...`);
+      
+      // First, get the company list without details
+      const listResponse = await fetch('/api/scrape-wealth-managers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fetchDetails: false, limit: companyLimit })
+      });
+      
+      if (!listResponse.ok) {
+        throw new Error(`HTTP ${listResponse.status}`);
+      }
+      
+      const listData = await listResponse.json();
+      console.log('Loaded company list:', listData);
+      
+      if (!listData.companies || !Array.isArray(listData.companies)) {
+        throw new Error('No companies found');
+      }
+      
+      const companies = listData.companies;
+      
+      // Convert to InputRow format
+      const rows: InputRow[] = companies.map((company: CompanyListItem, index: number) => ({
+        id: index + 1,
+        company_name: company.company_name,
+        valid: true
+      }));
+      
+      setInputRows(rows);
+      
+      // Initialize results array with basic company info
+      const initialResults: ResultRow[] = companies.map((company: CompanyListItem) => ({
+        company_name: company.company_name,
+        status: "ok" as const
+      }));
+      
+      setResults(initialResults);
+      
+      // Now fetch details for each company one by one
+      const enhancedResults = [...initialResults];
+      
+      for (let i = 0; i < companies.length; i++) {
+        const company = companies[i];
+        console.log(`Fetching details for: ${company.company_name}`);
+        
+        try {
+          // Update status to show which company is being processed
+          setStatus("running");
+          setCurrentlyProcessing(company.company_name);
+          
+          const detailResponse = await fetch('/api/scrape-wealth-managers/details', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: company.url })
+          });
+          
+          if (detailResponse.ok) {
+            const detailData = await detailResponse.json();
+            
+            // Update the specific company's data
+            enhancedResults[i] = {
+              ...enhancedResults[i],
+              phone: detailData.phone,
+              country: detailData.country,
+              city: detailData.city
+            };
+            
+            // Update UI immediately
+            setResults([...enhancedResults]);
+            setProgress(Math.round(((i + 1) / companies.length) * 100));
+          }
+        } catch (error) {
+          console.error(`Error fetching details for ${company.company_name}:`, error);
+          // Mark this company as having an error but continue
+          enhancedResults[i] = {
+            ...enhancedResults[i],
+            status: "error" as const,
+            error: "Failed to fetch details"
+          };
+          setResults([...enhancedResults]);
+        }
+        
+        // Add delay between requests to be respectful
+        if (i < companies.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      setStatus("done");
+      setProgress(100);
+      setCurrentlyProcessing("");
+      console.log('Completed loading all wealth managers');
+      
+    } catch (error) {
+      console.error('Error loading wealth managers:', error);
+      alert(`Failed to load wealth managers: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setStatus("failed");
+      setCurrentlyProcessing("");
+    } finally {
+      setIsLoadingWealthManagers(false);
+    }
+  }
+
+  async function enhanceWithExecutives() {
+    if (!results.length) return;
+    
+    setIsEnhancing(true);
+    try {
+      const enhancedResults = [...results];
+      
+      for (let i = 0; i < enhancedResults.length; i++) {
+        const company = enhancedResults[i];
+        if (company.status !== "ok") continue;
+        
+        console.log(`Enhancing ${company.company_name} with executive info...`);
+        
+        try {
+          const response = await fetch('/api/company', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              company: company.company_name,
+              country: company.country,
+              city: company.city,
+              enhance: true // Signal for executive lookup
+            })
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            
+            // Use structured data if available, otherwise fallback to text parsing
+            if (data.structured) {
+              // Direct assignment from structured response
+              if (data.ceo) {
+                enhancedResults[i].ceo = data.ceo;
+              }
+              if (data.cofounders && data.cofounders.length > 0) {
+                enhancedResults[i].cofounders = data.cofounders;
+              }
+            } else if (data.raw_text) {
+              // Fallback to text parsing for backwards compatibility
+              const rawText = data.raw_text.toLowerCase();
+              
+              // Simple extraction - look for CEO mentions
+              const ceoMatch = rawText.match(/ceo[:\s]+([^.\n]+)/i);
+              if (ceoMatch) {
+                enhancedResults[i].ceo = ceoMatch[1].trim();
+              }
+              
+              // Look for founder/cofounder mentions
+              const founderMatches = rawText.match(/(co-?founder|founder)[:\s]+([^.\n]+)/gi);
+              if (founderMatches) {
+                enhancedResults[i].cofounders = founderMatches.map((match: string) => 
+                  match.replace(/(co-?founder|founder)[:\s]+/i, '').trim()
+                );
+              }
+              
+              // Update raw_text with executive info
+              enhancedResults[i].raw_text = `${company.raw_text || ''}\n\n--- EXECUTIVE INFO ---\n${data.raw_text}`;
+            }
+          }
+        } catch (error) {
+          console.error(`Error enhancing ${company.company_name}:`, error);
+        }
+        
+        // Update progress
+        setResults([...enhancedResults]);
+        
+        // Add delay between requests
+        if (i < enhancedResults.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+      
+      console.log('Enhancement complete');
+    } catch (error) {
+      console.error('Enhancement error:', error);
+      alert(`Enhancement failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsEnhancing(false);
+    }
   }
 
   async function onRun() {
@@ -119,26 +333,17 @@ export default function Home() {
         if (err) {
           return {
             company_name: r.company_name,
-            domain: guessDomain(r.company_name),
-            address: "",
-            industry: "",
-            contacts: "",
-            ceo: "",
+            homepage: "",
+            contact_page: "",
             status: "error",
-            error: "Mock: not found or blocked",
+            error: "Demo: nicht gefunden oder blockiert",
           };
         }
         const dom = guessDomain(r.company_name);
-        const email = `info@${dom}`;
-        const phone = "+41 22 555 1234";
-        const contact = [email, phone, `https://www.${dom.replace(/^www\./, "")}/contact`].join(" | ");
         return {
           company_name: r.company_name,
-          domain: `www.${dom}`,
-          address: cities[Math.floor(Math.random() * cities.length)],
-          industry: "Wealth Management",
-          contacts: contact,
-          ceo: "John Doe",
+          homepage: `https://www.${dom}`,
+          contact_page: `https://www.${dom}/contact`,
           status: "ok",
         };
       }
@@ -170,6 +375,7 @@ export default function Home() {
 
     async function worker(row: InputRow, index: number) {
       try {
+        console.log(`🔍 Fetching data for: ${row.company_name}`);
         const res = await fetch("/api/company", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -177,37 +383,34 @@ export default function Home() {
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
+          console.error(`❌ API Error for ${row.company_name}:`, err);
           throw new Error((err as { error?: string })?.error || `HTTP ${res.status}`);
         }
         const data = await res.json();
-        const website: string = data.website || "";
-        const address: string = data.headquarters || (Array.isArray(data.addresses) ? data.addresses[0] : "") || "";
-        const emails: string[] = data.contacts?.emails || [];
-        const phones: string[] = data.contacts?.phones || [];
-        const contactPage: string = data.contacts?.contact_page || data.contact_page || "";
-        const ceo: string = data.executives?.ceo || "";
-        const contacts = [emails[0], phones[0], contactPage].filter(Boolean).join(" | ");
+        console.log(`✅ Received data for ${row.company_name}:`, data);
+        
+        // Also log if there's raw_text field
+        if (data.raw_text) {
+          console.log(`📝 Raw AI response for ${row.company_name}:`, data.raw_text);
+        }
+        const homepage: string = data.homepage || "";
+        const contactPage: string = data.contacts?.contact_page || "";
 
         out[index] = {
           company_name: data.company || row.company_name,
-          domain: website.replace(/^https?:\/\//, ""),
-          address,
-          industry: "",
-          contacts,
-          ceo,
+          homepage: homepage,
+          contact_page: contactPage,
           status: "ok",
+          raw_text: data.raw_text || "",
         };
       } catch (e: unknown) {
         const error = e as Error;
         out[index] = {
           company_name: row.company_name,
-          domain: guessDomain(row.company_name),
-          address: "",
-          industry: "",
-          contacts: "",
-          ceo: "",
+          homepage: "",
+          contact_page: "",
           status: "error",
-          error: error?.message || "fetch failed",
+          error: error?.message || "Abruf fehlgeschlagen",
         };
       } finally {
         completed += 1;
@@ -231,6 +434,7 @@ export default function Home() {
       );
     }
     await Promise.all(runners);
+    console.log(`🎉 Completed processing ${total} companies`);
     setStatus("done");
   }
 
@@ -262,7 +466,7 @@ export default function Home() {
       reader.readAsText(file);
     } else {
       // Fallback: accept file but only show metadata
-      alert("Only CSV/TXT preview is supported in this build.");
+      alert("Nur CSV/TXT-Vorschau wird in dieser Version unterstützt.");
       setActiveTab("excel");
     }
   }
@@ -275,19 +479,29 @@ export default function Home() {
     <div className="min-h-screen p-6 sm:p-10">
       {/* Header */}
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold">Find the Company</h1>
+        <h1 className="text-2xl font-semibold">Unternehmen Finden</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          输入公司列表（文本或表格），预览后运行并下载结果。
+          Geben Sie eine Unternehmensliste ein (Text oder Tabelle), führen Sie sie aus und laden Sie die Ergebnisse herunter.
         </p>
       </header>
 
-      {/* Two-column adaptive layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-        {/* Left column */}
+      {/* Single column full-width layout */}
+      <div className="max-w-full">
         <div className="space-y-6">
-          {/* Input Mode (Tabs) */}
+          {/* Combined Input and Run Section */}
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl">
+            {/* Input Mode (Tabs) */}
             <div className="flex border-b border-gray-200 dark:border-gray-800 p-2 gap-2">
+              <button
+                className={`px-3 py-1.5 rounded-md text-sm ${
+                  activeTab === "wealth"
+                    ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-black"
+                    : "hover:bg-gray-100 dark:hover:bg-gray-900"
+                }`}
+                onClick={() => setActiveTab("wealth")}
+              >
+                Wealth Managers (Europe)
+              </button>
               <button
                 className={`px-3 py-1.5 rounded-md text-sm ${
                   activeTab === "text"
@@ -296,7 +510,7 @@ export default function Home() {
                 }`}
                 onClick={() => setActiveTab("text")}
               >
-                Text List
+                Textliste
               </button>
               <button
                 className={`px-3 py-1.5 rounded-md text-sm ${
@@ -310,11 +524,40 @@ export default function Home() {
               </button>
             </div>
 
-            {activeTab === "text" ? (
+            {/* Input Content */}
+            {activeTab === "wealth" ? (
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <label className="text-sm text-gray-600 dark:text-gray-400">Anzahl der Unternehmen:</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={companyLimit}
+                    onChange={(e) => setCompanyLimit(parseInt(e.target.value) || 10)}
+                    className="w-16 px-2 py-1 text-sm rounded-md border border-gray-200 dark:border-gray-700 bg-transparent"
+                    placeholder="10"
+                  />
+                  <button
+                    onClick={loadWealthManagers}
+                    disabled={isLoadingWealthManagers}
+                    className="px-3 py-1.5 text-sm rounded-md bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+                  >
+                    {isLoadingWealthManagers ? 'Loading...' : 'Load Wealth Managers'}
+                  </button>
+                </div>
+                <div className="text-xs text-gray-600 dark:text-gray-400">
+                  Lädt automatisch Vermögensverwalter aus Europa mit Details wie Telefon, Land und Stadt.
+                </div>
+                <div className="text-xs text-gray-600 dark:text-gray-400">
+                  Zeilen: {stats.total} · Dedupliziert: {stats.dedup} · Ungültig: {stats.invalid}
+                </div>
+              </div>
+            ) : activeTab === "text" ? (
               <div className="p-4 space-y-3">
                 <textarea
                   className="w-full h-40 rounded-md border border-gray-200 dark:border-gray-800 bg-transparent p-3 text-sm"
-                  placeholder="每行一个公司名 或 用逗号分隔"
+                  placeholder="Ein Unternehmen pro Zeile oder durch Kommas getrennt"
                   value={textValue}
                   onChange={(e) => setTextValue(e.target.value)}
                 />
@@ -323,10 +566,23 @@ export default function Home() {
                     onClick={onParse}
                     className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700"
                   >
-                    Parse
+                    Analysieren
+                  </button>
+                  <button
+                    onClick={onRun}
+                    disabled={!inputRows.length || status === "running"}
+                    className="px-3 py-1.5 text-sm rounded-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Ausführen
+                  </button>
+                  <button
+                    onClick={clearInput}
+                    className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900"
+                  >
+                    Löschen
                   </button>
                   <div className="text-xs text-gray-600 dark:text-gray-400">
-                    rows: {stats.total} · 去重数: {stats.dedup} · 无效数: {stats.invalid}
+                    Zeilen: {stats.total} · Dedupliziert: {stats.dedup} · Ungültig: {stats.invalid}
                   </div>
                 </div>
               </div>
@@ -342,8 +598,8 @@ export default function Home() {
                     if (file) onUploadFile(file);
                   }}
                 >
-                  <p className="text-sm">拖拽 CSV/TXT 到此处 或 点击上传</p>
-                  <p className="text-xs text-gray-500 mt-1">XLSX 预览需外部库，当前仅支持 CSV/TXT</p>
+                  <p className="text-sm">CSV/TXT hierher ziehen oder zum Hochladen klicken</p>
+                  <p className="text-xs text-gray-500 mt-1">XLSX-Vorschau erfordert externe Bibliotheken, derzeit nur CSV/TXT unterstützt</p>
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -355,177 +611,140 @@ export default function Home() {
                     }}
                   />
                 </div>
-                <div className="text-xs text-gray-600 dark:text-gray-400">
-                  rows: {stats.total} · 去重数: {stats.dedup} · 无效数: {stats.invalid}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={onRun}
+                    disabled={!inputRows.length || status === "running"}
+                    className="px-3 py-1.5 text-sm rounded-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Ausführen
+                  </button>
+                  <button
+                    onClick={clearInput}
+                    className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900"
+                  >
+                    Löschen
+                  </button>
+                  <div className="text-xs text-gray-600 dark:text-gray-400">
+                    Zeilen: {stats.total} · Dedupliziert: {stats.dedup} · Ungültig: {stats.invalid}
+                  </div>
                 </div>
               </div>
             )}
+
           </div>
 
-          {/* Input Preview Grid */}
-          <div className="border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden">
-            <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-800 text-sm font-medium">
-              Input Preview（前 50 行）
-            </div>
-            <div className="max-h-80 overflow-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 dark:bg-gray-900 sticky top-0">
-                  <tr>
-                    <th className="text-left px-3 py-2 w-16">#</th>
-                    <th className="text-left px-3 py-2">company_name</th>
-                    <th className="text-left px-3 py-2 w-24">valid</th>
-                    <th className="text-left px-3 py-2">note</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inputRows.slice(0, 50).map((r, idx) => (
-                    <tr key={r.id} className="border-t border-gray-100 dark:border-gray-900">
-                      <td className="px-3 py-2 text-gray-600">{idx + 1}</td>
-                      <td className="px-3 py-2">
-                        <input
-                          className="w-full bg-transparent border border-gray-200 dark:border-gray-800 rounded px-2 py-1"
-                          value={r.company_name}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setInputRows((rows) =>
-                              rows.map((x) =>
-                                x.id === r.id ? { ...x, company_name: v, valid: v.trim().length > 0 } : x
-                              )
-                            );
-                          }}
-                        />
-                      </td>
-                      <td className="px-3 py-2">
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded-full ${
-                            r.valid
-                              ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
-                              : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                          }`}
-                        >
-                          {r.valid ? "valid" : "invalid"}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">
-                        <input
-                          className="w-full bg-transparent border border-gray-200 dark:border-gray-800 rounded px-2 py-1"
-                          value={r.note ?? ""}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setInputRows((rows) => rows.map((x) => (x.id === r.id ? { ...x, note: v } : x)));
-                          }}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                  {inputRows.length === 0 && (
+          {/* Input Preview */}
+          {inputRows.length > 0 && (
+            <div className="border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden">
+              <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-800 text-sm font-medium">
+                Eingabe Vorschau ({inputRows.length} Unternehmen)
+              </div>
+              <div className="max-h-60 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 dark:bg-gray-900 sticky top-0">
                     <tr>
-                      <td colSpan={4} className="px-3 py-6 text-center text-gray-500">
-                        无输入数据，先在上方粘贴文本或上传 CSV
-                      </td>
+                      <th className="text-left px-3 py-2 w-16">#</th>
+                      <th className="text-left px-3 py-2">Firmenname</th>
+                      <th className="text-left px-3 py-2 w-20">Status</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-800 flex items-center gap-2">
-              <button
-                onClick={clearInput}
-                className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Right column */}
-        <div className="space-y-6">
-          {/* Run Controls */}
-          <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-medium">Run</div>
-              <div className="flex items-center gap-3">
-                <label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1">
-                  <input type="checkbox" checked={mockMode} onChange={(e) => setMockMode(e.target.checked)} />
-                  Mock mode
-                </label>
-                <div className="text-xs text-gray-600 dark:text-gray-400">{status}</div>
+                  </thead>
+                  <tbody>
+                    {inputRows.slice(0, 50).map((row, idx) => (
+                      <tr key={row.id} className="border-t border-gray-100 dark:border-gray-900">
+                        <td className="px-3 py-2 text-gray-600">{idx + 1}</td>
+                        <td className="px-3 py-2">{row.company_name}</td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full ${
+                              row.valid
+                                ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                                : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                            }`}
+                          >
+                            {row.valid ? "bereit" : "ungültig"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {inputRows.length > 50 && (
+                      <tr>
+                        <td colSpan={3} className="px-3 py-2 text-center text-gray-500 text-xs">
+                          ... und {inputRows.length - 50} weitere
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
-            <div className="h-2 rounded bg-gray-100 dark:bg-gray-900 overflow-hidden">
-              <div
-                className="h-full bg-blue-600 transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <button
-              onClick={onRun}
-              disabled={!inputRows.length || status === "running"}
-              className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              Run
-            </button>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  const names = [
-                    "1875 Finance",
-                    "BlackRock",
-                    "Pictet Group",
-                    "Partners Group",
-                    "UBS Wealth Management",
-                    "Credit Suisse",
-                    "Amundi",
-                    "Schroders",
-                  ];
-                  const rows: InputRow[] = names.map((n, i) => ({ id: i + 1, company_name: n, valid: true }));
-                  setInputRows(rows);
-                  setActiveTab("text");
-                }}
-                className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900"
-              >
-                Load mock companies
-              </button>
-              <span className="text-xs text-gray-500">快速填充示例公司并演示运行效果</span>
-            </div>
-          </div>
+          )}
 
           {/* Result Preview */}
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden">
             <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
-              <div className="text-sm font-medium">Result Preview</div>
+              <div className="text-sm font-medium">Ergebnisvorschau</div>
               <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
                 <input
                   type="checkbox"
                   checked={showErrorsOnly}
                   onChange={(e) => setShowErrorsOnly(e.target.checked)}
                 />
-                show errors only
+                nur Fehler anzeigen
               </label>
             </div>
-            <div className="max-h-[480px] overflow-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 dark:bg-gray-900 sticky top-0">
                   <tr>
-                    <th className="text-left px-3 py-2">company_name</th>
-                    <th className="text-left px-3 py-2">domain</th>
-                    <th className="text-left px-3 py-2">address</th>
-                    <th className="text-left px-3 py-2">industry</th>
-                    <th className="text-left px-3 py-2">contacts</th>
-                    <th className="text-left px-3 py-2">ceo</th>
-                    <th className="text-left px-3 py-2">status</th>
+                    <th className="text-left px-3 py-2">Firmenname</th>
+                    <th className="text-left px-3 py-2">Phone</th>
+                    <th className="text-left px-3 py-2">Country</th>
+                    <th className="text-left px-3 py-2">City</th>
+                    <th className="text-left px-3 py-2">CEO</th>
+                    <th className="text-left px-3 py-2">Cofounders</th>
+                    <th className="text-left px-3 py-2">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredResults.map((r, i) => (
                     <tr key={`${r.company_name}-${i}`} className="border-t border-gray-100 dark:border-gray-900">
                       <td className="px-3 py-2">{r.company_name}</td>
-                      <td className="px-3 py-2">{r.domain}</td>
-                      <td className="px-3 py-2">{r.address}</td>
-                      <td className="px-3 py-2">{r.industry}</td>
-                      <td className="px-3 py-2">{r.contacts}</td>
-                      <td className="px-3 py-2">{r.ceo}</td>
+                      <td className="px-3 py-2">
+                        {r.phone ? (
+                          <span className="text-sm">{r.phone}</span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {r.country ? (
+                          <span className="text-sm">{r.country}</span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {r.city ? (
+                          <span className="text-sm">{r.city}</span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {r.ceo ? (
+                          <span className="text-sm">{r.ceo}</span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {r.cofounders && r.cofounders.length > 0 ? (
+                          <span className="text-sm">{r.cofounders.join(', ')}</span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2">
                         <span
                           className={`text-xs px-2 py-0.5 rounded-full ${
@@ -545,7 +764,7 @@ export default function Home() {
                   {results.length === 0 && (
                     <tr>
                       <td colSpan={7} className="px-3 py-6 text-center text-gray-500">
-                        还没有结果。点击 Run 开始。
+                        Noch keine Ergebnisse. Klicken Sie auf Ausführen, um zu beginnen.
                       </td>
                     </tr>
                   )}
@@ -558,14 +777,21 @@ export default function Home() {
                 disabled={!results.length}
                 className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900 disabled:opacity-50"
               >
-                Download CSV
+                CSV herunterladen
               </button>
               <button
-                onClick={() => alert("XLSX 导出需要引入 SheetJS 等库，当前未启用。")}
+                onClick={() => alert("XLSX-Export erfordert externe Bibliotheken wie SheetJS, derzeit nicht aktiviert.")}
                 disabled={!results.length}
                 className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900 disabled:opacity-50"
               >
-                Download XLSX
+                XLSX herunterladen
+              </button>
+              <button
+                onClick={enhanceWithExecutives}
+                disabled={!results.length || isEnhancing}
+                className="px-3 py-1.5 text-sm rounded-md bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50"
+              >
+                {isEnhancing ? 'Enhancing...' : 'Enhance with CEO/Founders'}
               </button>
             </div>
           </div>

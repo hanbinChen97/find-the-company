@@ -1,159 +1,196 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createPerplexity } from '@ai-sdk/perplexity';
+import { generateText, generateObject } from 'ai';
+import { z } from 'zod';
+
+const perplexity = createPerplexity({
+  apiKey: process.env.PERPLEXITY_API_KEY ?? '',
+});
+
+function extractCompanyData(text: string, companyName: string): CompanyResult {
+  console.log('Parsing contact info response...');
+  
+  // Initialize result with minimal required fields
+  const result: CompanyResult = {
+    company: companyName,
+    contacts: { emails: [], phones: [] },
+    executives: { cofounders: [] },
+    sources: []
+  };
+
+  // Helper function to extract content after a label
+  const extractAfterLabel = (label: string, defaultValue = ''): string => {
+    const regex = new RegExp(`${label}:\\s*(.+?)(?:\n|$)`, 'i');
+    const match = text.match(regex);
+    return match ? match[1].trim() : defaultValue;
+  };
+
+  // Helper function to extract section content
+  const extractSection = (sectionName: string): string => {
+    const regex = new RegExp(`=== ${sectionName} ===([\\s\\S]*?)(?:=== |$)`, 'i');
+    const match = text.match(regex);
+    return match ? match[1].trim() : '';
+  };
+
+  // Extract contact info section (main focus)
+  const contactInfoSection = extractSection('CONTACT INFO');
+  if (contactInfoSection) {
+    const homepage = extractAfterLabel('Homepage', '');
+    if (homepage && homepage !== 'Not found') {
+      result.homepage = homepage.replace(/^\[|\]$/g, '');
+    }
+
+    const contactPage = extractAfterLabel('Contact Page', '');
+    if (contactPage && contactPage !== 'Not found') {
+      result.contacts.contact_page = contactPage.replace(/^\[|\]$/g, '');
+    }
+  }
+
+
+  console.log('Parsed contact result:', result);
+  return result;
+}
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-type Exec = { name: string; title: string };
 type CompanyResult = {
   company: string;
-  website?: string;
-  headquarters?: string;
-  addresses?: string[];
+  homepage?: string;
   contacts: {
     contact_page?: string;
     emails: string[];
     phones: string[];
   };
   executives: {
-    ceo?: string;
-    cofounders: string[];
-    others?: Exec[];
+    cofounders: Array<{
+      name: string;
+      email?: string;
+    }>;
   };
-  summary?: string;
   sources: string[];
 };
 
-function schema() {
-  return {
-    type: 'object',
-    additionalProperties: false,
-    required: ['company', 'contacts', 'executives', 'sources'],
-    properties: {
-      company: { type: 'string' },
-      website: { type: 'string' },
-      headquarters: { type: 'string' },
-      addresses: { type: 'array', items: { type: 'string' } },
-      contacts: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['emails', 'phones'],
-        properties: {
-          contact_page: { type: 'string' },
-          emails: { type: 'array', items: { type: 'string' } },
-          phones: { type: 'array', items: { type: 'string' } },
-        },
-      },
-      executives: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['cofounders'],
-        properties: {
-          ceo: { type: 'string' },
-          cofounders: { type: 'array', items: { type: 'string' } },
-          others: {
-            type: 'array',
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              required: ['name', 'title'],
-              properties: { name: { type: 'string' }, title: { type: 'string' } },
-            },
-          },
-        },
-      },
-      summary: { type: 'string' },
-      sources: { type: 'array', items: { type: 'string' } },
-    },
-  } as const;
-}
 
 async function callPerplexity(company: string): Promise<CompanyResult> {
-  const apiKey = process.env.PPLX_API_KEY || process.env.PERPLEXITY_API_KEY;
-  if (!apiKey) {
-    throw new Error('Missing PPLX_API_KEY (or PERPLEXITY_API_KEY)');
-  }
-
-  const messages = [
-    {
-      role: 'system',
-      content:
-        'You are a precise research assistant with web access. ' +
-        'Research the official company website and credible sources. ' +
-        'Return STRICT JSON that matches the provided schema. Include source URLs.'
-    },
-    {
-      role: 'user',
-      content:
-        `Company: ${company}\n\n` +
-        'Task:\n' +
-        '- Identify the official website and address/headquarters.\n' +
-        '- Find an official contact page and extract emails/phones if available.\n' +
-        '- Identify CEO and co-founders; include other key executives if clear.\n' +
-        '- Keep results concise and verifiable, with citations.\n' +
-        'Output: STRICT JSON only, matching the provided schema.'
-    }
-  ];
-
-  const res = await fetch('https://api.perplexity.ai/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'sonar',
-      temperature: 0,
-      return_citations: true,
-      messages,
-      response_format: {
-        type: 'json_schema',
-        json_schema: { name: 'company_profile', schema: schema(), strict: true },
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Perplexity API ${res.status}: ${text}`);
-  }
-  const data = await res.json();
-  const choice = data?.choices?.[0]?.message;
-  const raw: string = choice?.content ?? '';
-  const citations: string[] = choice?.citations ?? data?.citations ?? [];
-
-  let parsed: CompanyResult | null = null;
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    const start = raw.indexOf('{');
-    const end = raw.lastIndexOf('}');
-    if (start >= 0 && end > start) {
-      try { parsed = JSON.parse(raw.slice(start, end + 1)); } catch {}
-    }
+    const prompt = `Find the homepage and contact page for company: ${company}
+
+Please provide only this information in the exact format shown:
+
+=== CONTACT INFO ===
+Homepage: [company's main website URL]
+Contact Page: [contact page URL if found]
+
+SEARCH STRATEGY:
+1. Find the company's official website/homepage
+2. Look for their contact page or contact us section
+
+IMPORTANT: 
+- Focus ONLY on homepage and contact page URLs
+- Use exact format with === CONTACT INFO === header
+- If not found, write "Not found"`;
+
+    const { text, sources } = await generateText({
+      model: perplexity('sonar-pro'),
+      prompt,
+      temperature: 0,
+    });
+
+    console.log('Sources:', sources);
+    console.log('Raw text response:', text);
+
+    // Extract data from text response using simple parsing
+    const parsed = extractCompanyData(text, company);
+    
+    // Normalize minimal fields
+    parsed.company ||= company;
+    parsed.contacts ||= { emails: [], phones: [] };
+    parsed.contacts.emails ||= [];
+    parsed.contacts.phones ||= [];
+    parsed.executives ||= { cofounders: [] };
+    parsed.executives.cofounders ||= [];
+    parsed.sources ||= [];
+
+    // Include raw text for debugging and display
+    (parsed as CompanyResult & { raw_text: string }).raw_text = text;
+
+    return parsed;
+  } catch (error) {
+    throw new Error(`Perplexity API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
-  if (!parsed) throw new Error('Failed to parse structured output');
+}
 
-  // Normalize minimal fields
-  parsed.company ||= company;
-  parsed.contacts ||= { emails: [], phones: [] };
-  parsed.contacts.emails ||= [];
-  parsed.contacts.phones ||= [];
-  parsed.executives ||= { cofounders: [] };
-  parsed.executives.cofounders ||= [];
-  parsed.sources = Array.from(new Set([...(parsed.sources || []), ...citations]));
+// Zod schema for executive information
+const ExecutiveSchema = z.object({
+  ceo: z.string().optional().describe('Name of the current CEO'),
+  cofounders: z.array(z.string()).optional().describe('Names of the founders/cofounders')
+});
 
-  return parsed;
+type ExecutiveInfo = {
+  ceo?: string | null;
+  cofounders: string[];
+  structured: boolean;
+};
+
+async function callPerplexityForExecutives(company: string, country?: string, city?: string): Promise<ExecutiveInfo> {
+  try {
+    const locationContext = country || city ? ` (located in ${[city, country].filter(Boolean).join(', ')})` : '';
+    const prompt = `Find information about the CEO and founders/cofounders of the company: ${company}${locationContext}
+
+Please provide accurate information about:
+1. Current CEO name
+2. Founders/cofounders names
+
+SEARCH STRATEGY:
+1. Look for current leadership information on the company's official website
+2. Find founder and cofounder details from reliable sources
+3. Verify information is current and accurate
+
+IMPORTANT: 
+- Focus on current CEO and original founders/cofounders
+- Only include verified names, not job titles
+- If not found, leave the field empty`;
+
+    const { object } = await generateObject({
+      model: perplexity('sonar-pro'),
+      prompt,
+      schema: ExecutiveSchema,
+      temperature: 0,
+    });
+
+    console.log('Executive info response:', object);
+    return {
+      ceo: object.ceo || null,
+      cofounders: object.cofounders || [],
+      structured: true
+    };
+  } catch (error) {
+    throw new Error(`Perplexity API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const company = (body.company || body.name || '').toString().trim();
+    const enhance = body.enhance || false;
+    
     if (!company) {
       return NextResponse.json({ error: 'Body must include { "company": "<name>" }' }, { status: 400 });
     }
-    const result = await callPerplexity(company);
-    return NextResponse.json(result, { status: 200 });
+    
+    if (enhance) {
+      // Handle executive enhancement request
+      const country = body.country;
+      const city = body.city;
+      const result = await callPerplexityForExecutives(company, country, city);
+      return NextResponse.json(result, { status: 200 });
+    } else {
+      // Handle normal company lookup
+      const result = await callPerplexity(company);
+      return NextResponse.json(result, { status: 200 });
+    }
   } catch (e: unknown) {
     const error = e as Error;
     return NextResponse.json({ error: error?.message || 'Unexpected error' }, { status: 500 });
