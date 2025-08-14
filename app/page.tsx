@@ -50,9 +50,9 @@ function guessDomain(name: string): string {
   return slug ? `${slug}.com` : "";
 }
 
-function downloadCSV(filename: string, rows: any[]) {
+function downloadCSV(filename: string, rows: ResultRow[]) {
   if (!rows.length) return;
-  const headers = Object.keys(rows[0]);
+  const headers = Object.keys(rows[0]) as (keyof ResultRow)[];
   const csv = [
     headers.join(","),
     ...rows.map((r) => headers.map((h) => JSON.stringify(r[h] ?? "")).join(",")),
@@ -176,8 +176,8 @@ export default function Home() {
           body: JSON.stringify({ company: row.company_name }),
         });
         if (!res.ok) {
-          const err = await res.json().catch(() => ({} as any));
-          throw new Error(err?.error || `HTTP ${res.status}`);
+          const err = await res.json().catch(() => ({}));
+          throw new Error((err as { error?: string })?.error || `HTTP ${res.status}`);
         }
         const data = await res.json();
         const website: string = data.website || "";
@@ -197,7 +197,8 @@ export default function Home() {
           ceo,
           status: "ok",
         };
-      } catch (e: any) {
+      } catch (e: unknown) {
+        const error = e as Error;
         out[index] = {
           company_name: row.company_name,
           domain: guessDomain(row.company_name),
@@ -206,7 +207,7 @@ export default function Home() {
           contacts: "",
           ceo: "",
           status: "error",
-          error: e?.message || "fetch failed",
+          error: error?.message || "fetch failed",
         };
       } finally {
         completed += 1;

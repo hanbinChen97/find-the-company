@@ -77,9 +77,9 @@ async function callPerplexity(company: string): Promise<CompanyResult> {
     {
       role: 'system',
       content:
-        'You are a precise research assistant with web access. '\
-        + 'Research the official company website and credible sources. '\
-        + 'Return STRICT JSON that matches the provided schema. Include source URLs.'
+        'You are a precise research assistant with web access. ' +
+        'Research the official company website and credible sources. ' +
+        'Return STRICT JSON that matches the provided schema. Include source URLs.'
     },
     {
       role: 'user',
@@ -135,10 +135,10 @@ async function callPerplexity(company: string): Promise<CompanyResult> {
 
   // Normalize minimal fields
   parsed.company ||= company;
-  parsed.contacts ||= { emails: [], phones: [] } as any;
+  parsed.contacts ||= { emails: [], phones: [] };
   parsed.contacts.emails ||= [];
   parsed.contacts.phones ||= [];
-  parsed.executives ||= { cofounders: [] } as any;
+  parsed.executives ||= { cofounders: [] };
   parsed.executives.cofounders ||= [];
   parsed.sources = Array.from(new Set([...(parsed.sources || []), ...citations]));
 
@@ -147,15 +147,16 @@ async function callPerplexity(company: string): Promise<CompanyResult> {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => ({} as any));
+    const body = await req.json().catch(() => ({}));
     const company = (body.company || body.name || '').toString().trim();
     if (!company) {
       return NextResponse.json({ error: 'Body must include { "company": "<name>" }' }, { status: 400 });
     }
     const result = await callPerplexity(company);
     return NextResponse.json(result, { status: 200 });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || 'Unexpected error' }, { status: 500 });
+  } catch (e: unknown) {
+    const error = e as Error;
+    return NextResponse.json({ error: error?.message || 'Unexpected error' }, { status: 500 });
   }
 }
 
